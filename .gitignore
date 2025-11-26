@@ -7,3 +7,13 @@ DeepFM_with_Pytorch/
 *.pkl
 data/*.parquet
 data/*.csv
+
+# Checkpoint files
+ckpts/
+
+# WandB files
+wandb/
+*.log
+
+# pycache
+__pycache__/
