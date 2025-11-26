@@ -277,7 +277,42 @@ def main():
                 break
 
 
+    print("\n" + "="*50)
     print("Training finished.")
+    print("="*50)
+    
+    # Load best model and evaluate on test set
+    best_ckpt_path = os.path.join(config["save_dir"], f"best_{config['model_type']}.pth")
+    
+    if os.path.exists(best_ckpt_path):
+        print(f"\nLoading best model from {best_ckpt_path}")
+        checkpoint = torch.load(best_ckpt_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state"])
+        print(f"Best model from epoch {checkpoint['epoch']} loaded (val_loss={checkpoint['best_val_loss']:.4f})")
+        
+        print("\n" + "="*50)
+        print("Evaluating on Test Set")
+        print("="*50)
+        
+        test_metrics = evaluate(
+            model=model,
+            loader=test_loader,
+            criterion=criterion,
+            device=device,
+            epoch=checkpoint['epoch'],
+            global_step=checkpoint['global_step'],
+            split="test",
+        )
+        
+        print(f"\n{'='*50}")
+        print(f"Final Test Results:")
+        print(f"  - Test Loss: {test_metrics['loss']:.4f}")
+        print(f"  - Test MAE: {test_metrics['mae']:.4f}")
+        print(f"{'='*50}\n")
+    else:
+        print(f"\nWarning: Best model checkpoint not found at {best_ckpt_path}")
+        print("Skipping test evaluation.")
+    
     wandb.finish()
 
 
