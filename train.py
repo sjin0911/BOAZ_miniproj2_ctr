@@ -169,7 +169,7 @@ def main():
     os.makedirs(config["save_dir"], exist_ok=True)
 
     set_seed(config["seed"])
-    device = 'mps'
+    device = config["use_cuda"]
     print("Device:", device)
 
     wandb.init(
