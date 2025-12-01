@@ -16,8 +16,8 @@ class AutoInt(nn.Module):
                  dnn_dropout=0, init_std=0.0001, seed=1024, 
                  use_cuda=True, device='cpu', seq_vocab_size=None):
         super(AutoInt, self).__init__()
-        self.feature_sizes = feature_sizes # 각 feature의 길이
-        self.field_size = len(feature_sizes) + (1 if seq_vocab_size is not None else 0) # 한 data에서 feature의 종류 개수
+        self.feature_sizes = feature_sizes # Length of each feature
+        self.field_size = len(feature_sizes) + (1 if seq_vocab_size is not None else 0) # Number of feature fields in one data sample
         self.embedding_size = embedding_size
         self.embedding_dropout = embedding_dropout
         self.att_layer_num = att_layer_num
@@ -34,7 +34,7 @@ class AutoInt(nn.Module):
         self.seed = seed
         self.device = device
         
-        # Embeddings : 모든 feature_size에 대해 feature_size -> embedding_size 차원으로 변환
+        # Embeddings: Transform feature_size -> embedding_size for all features
         self.embeddings = nn.ModuleList(
             [nn.Embedding(feature_size, self.embedding_size) for feature_size in self.feature_sizes])
         
@@ -51,15 +51,15 @@ class AutoInt(nn.Module):
         # DNN Part (optional - only create if dnn_hidden_units is not None)
         if self.dnn_hidden_units is not None:
             self.dnn_layers = nn.ModuleList()
-            input_dim = self.field_size * self.embedding_size # feature 종류만큼 embedding size로 변환되고, 그게 모두 들어오니까...
+            input_dim = self.field_size * self.embedding_size # Input is flattened embeddings
             for hidden_unit in self.dnn_hidden_units:
-                self.dnn_layers.append(nn.Linear(input_dim, hidden_unit)) # 주어진 hidden unit 개수, 차원만큼 hidden layer 추가
+                self.dnn_layers.append(nn.Linear(input_dim, hidden_unit))
                 if self.dnn_use_bn:
                     self.dnn_layers.append(nn.BatchNorm1d(hidden_unit))
                 self.dnn_layers.append(nn.ReLU()) # Assuming ReLU for now
                 if self.dnn_dropout > 0:
                     self.dnn_layers.append(nn.Dropout(self.dnn_dropout))
-                input_dim = hidden_unit # hidden unit 차원으로 input dim 변경
+                input_dim = hidden_unit # Update input dim for next layer
                 
             self.dnn_output_layer = nn.Linear(input_dim, 1)
         
@@ -87,10 +87,12 @@ class AutoInt(nn.Module):
 
         self.to(self.device)
 
-    def forward(self, Xi, Xv, seq=None):
+    def forward(self, Xi, Xv, seq=None, return_attention=False):
         """
         Xi: (batch_size, field_size, 1) - Indices
         Xv: (batch_size, field_size, 1) - Values
+        seq: (batch_size, seq_len) - Sequence data (Optional)
+        return_attention: If True, returns attention weights for visualization
         """
         # 1. Embedding Layer
         # Xi shape: [batch_size, field_size, 1] -> [batch_size, field_size]
@@ -123,15 +125,20 @@ class AutoInt(nn.Module):
             gru_feature = gru_out.unsqueeze(1)
             embeddings = torch.cat([embeddings, gru_feature], dim=1)
 
-        # added : apply dropout as the rate previously set to embeddings_dropout
-        embeddings = F.dropout(embeddings, p=self.embedding_dropout)
+        # Apply dropout (Use self.training to ensure it's only active during training)
+        embeddings = F.dropout(embeddings, p=self.embedding_dropout, training=self.training)
 
         # 2. Multi-head Self-Attention
         att_input = embeddings
+        att_weights_list = [] # List to store attention weights for visualization
+
         for att_layer in self.att_layers:
-            # MultiheadAttention expects (batch, seq, feature) if batch_first=True
+            # MultiheadAttention returns (attn_output, attn_output_weights)
             # query, key, value are the same for self-attention
-            att_output, _ = att_layer(att_input, att_input, att_input)
+            att_output, att_weights = att_layer(att_input, att_input, att_input)
+            
+            # Store attention weights
+            att_weights_list.append(att_weights)
             
             if self.att_res:
                 res = self.res_layer(att_input)
@@ -157,10 +164,9 @@ class AutoInt(nn.Module):
         if self.dnn_hidden_units is not None:
             y_pred = y_pred + dnn_logit
         
-        # 4. Combine
-        y_pred = att_logit
-        if self.dnn_hidden_units is not None:
-            y_pred = y_pred + dnn_logit
+        # Return attention weights if requested
+        if return_attention:
+            return y_pred, att_weights_list
         
         return y_pred
 
