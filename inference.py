@@ -14,17 +14,17 @@ try:
     from model.AutoInt import AutoInt
     from model.DeepFM import DeepFM
 except ImportError:
-    print("[Warn] 모델 파일을 찾을 수 없습니다. 경로를 확인해주세요.")
+    print("[Warn] Model files not found. Please check the path.")
 
 # ==================================================================================
-# 설정
+# Configuration
 # ==================================================================================
 class Config:
     DATA_DIR = "./data"
     CKPT_DIR = "./ckpts"
     OUTPUT_DIR = "./inference"
 
-    # 입출력 파일명
+    # Input/Output Filenames
     RANKING_DATA_FILE = "ranking_df.parquet"
     RESULT_FILE = "inference_results.csv"
 
@@ -33,7 +33,7 @@ class Config:
 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# 컬럼 정의 (수정 금지)
+# Column Definitions (DO NOT MODIFY)
 DENSE_COLS = ["is_weekend", "price_scaled", "session_rank_scaled", "hour_scaled", "day_of_week_scaled"]
 SPARSE_BASE_COLS = ["product_id_idx", "category_id_idx", "category_code_idx", "brand_idx", "user_id_idx", "user_session_idx"]
 SEQ_COLS = ["seq_prod_1_idx", "seq_prod_2_idx", "seq_prod_3_idx", "seq_prod_4_idx", "seq_prod_5_idx"]
@@ -44,12 +44,12 @@ def load_pickle(path):
     with open(path, 'rb') as f: return pickle.load(f)
 
 def prepare_batch_inputs(batch_df, version, device):
-    """버전(V1/V2/V3)에 따라 데이터를 모델 입력 형태(Tensor)로 변환"""
+    """Convert data to model input format (Tensor) based on version (V1/V2/V3)"""
     dense_vals = batch_df[DENSE_COLS].values.astype(np.float32)
     sparse_vals = batch_df[SPARSE_BASE_COLS].values.astype(np.int64)
     seq_vals = batch_df[SEQ_COLS].fillna(0).values.astype(np.int64)
 
-    # Xi, Xv 생성 로직
+    # Logic for generating Xi, Xv
     if version in ["v1", "v3"]:
         Xi = np.concatenate((np.zeros_like(dense_vals, dtype=np.int64), sparse_vals), axis=1)
         Xv = np.concatenate((dense_vals, np.ones_like(sparse_vals, dtype=np.float32)), axis=1)
@@ -57,13 +57,13 @@ def prepare_batch_inputs(batch_df, version, device):
         Xi = np.concatenate((np.zeros_like(dense_vals, dtype=np.int64), sparse_vals, seq_vals), axis=1)
         Xv = np.concatenate((dense_vals, np.ones_like(sparse_vals, dtype=np.float32), np.ones_like(seq_vals, dtype=np.float32)), axis=1)
     else:
-        # 기본값 V3 처리
+        # Default handling as V3
         return prepare_batch_inputs(batch_df, "v3", device)
 
     Xi_tensor = torch.tensor(Xi, dtype=torch.long, device=device).unsqueeze(-1)
     Xv_tensor = torch.tensor(Xv, dtype=torch.float, device=device).unsqueeze(-1)
 
-    # V3일 때만 seq 텐서 반환
+    # Return seq tensor only for V3
     seq_tensor = torch.tensor(seq_vals, dtype=torch.long, device=device) if version == "v3" else None
 
     return Xi_tensor, Xv_tensor, seq_tensor
@@ -71,7 +71,7 @@ def prepare_batch_inputs(batch_df, version, device):
 def main():
     print(f"=== Auto-Detect Inference Started on {Config.DEVICE} ===")
 
-    # 1. Config 로드 및 자동 감지
+    # 1. Load Config and Auto-Detect
     config_path = os.path.join(os.getcwd(), Config.CONFIG_FILE)
     if os.path.exists(config_path):
         train_config = load_json(config_path)
@@ -79,17 +79,17 @@ def main():
     else:
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    # (1) 모델 종류 감지 (config.json의 "model_type")
+    # (1) Detect Model Type (from "model_type" in config.json)
     model_type = train_config.get("model_type", "AutoInt").lower()
-    # (2) 데이터 버전 감지 (config.json의 "data_loader")
+    # (2) Detect Data Version (from "data_loader" in config.json)
     version = train_config.get("data_loader", "v3").lower()
 
     print(f"[Auto-Detect] Target Model: {model_type.upper()} | Data Version: {version.upper()}")
 
-    # 2. 매핑 파일 로드 및 Feature Size 계산
+    # 2. Load Mapping File and Calculate Feature Sizes
     mappings = load_pickle(os.path.join(Config.DATA_DIR, Config.MAPPING_FILE))
 
-    # +1 제거된 정확한 사이즈 (학습 코드와 일치)
+    # Calculate exact size without +1 (Matches training code)
     base_sparse_dims = [len(mappings.get(c.replace("_idx", ""), [])) for c in SPARSE_BASE_COLS]
     product_vocab_size = len(mappings.get("product_id", []))
     dense_dims = [1] * len(DENSE_COLS)
@@ -98,20 +98,20 @@ def main():
     elif version == "v2": feature_sizes = dense_dims + base_sparse_dims + [product_vocab_size]*len(SEQ_COLS)
     else: feature_sizes = dense_dims + base_sparse_dims # V3
 
-    # 3. 모델 초기화 (동적 선택)
+    # 3. Initialize Model (Dynamic Selection)
     if "autoint" in model_type:
         ModelClass = AutoInt
     elif "deepfm" in model_type:
         ModelClass = DeepFM
     else:
-        raise ValueError(f"지원하지 않는 모델 타입입니다: {model_type}")
+        raise ValueError(f"Unsupported model type: {model_type}")
 
-    # [핵심] Config 키 -> 모델 인자 매핑 로직
+    # [Key] Logic mapping Config keys to Model arguments
     def get_valid_kwargs(cls, cfg):
-        # JSON 키 : 모델 __init__ 인자 이름 매핑
+        # JSON Key : Model __init__ argument name mapping
         key_map = {
             "autoint_dnn_hidden_units": "dnn_hidden_units",
-            "deepfm_hidden_dims": "hidden_dims",  # DeepFM 호환성 확보
+            "deepfm_hidden_dims": "hidden_dims",  # Ensure DeepFM compatibility
             "deepfm_dropout": "dropout",
             "embedding_size": "embedding_size"
         }
@@ -125,22 +125,22 @@ def main():
 
     model_kwargs = get_valid_kwargs(ModelClass, train_config)
 
-    # [안전장치] DeepFM hidden_dims 누락 시 강제 주입
+    # [Safety] Force inject hidden_dims if missing for DeepFM
     if "DeepFM" in ModelClass.__name__:
         if "hidden_dims" not in model_kwargs:
              if "deepfm_hidden_dims" in train_config:
                  model_kwargs["hidden_dims"] = train_config["deepfm_hidden_dims"]
              else:
-                 # 최후의 수단: 에러 로그에서 본 값 사용
-                 print("[Warn] Config 누락. [150, 300, 150] 강제 사용")
+                 # Last resort: Use default values observed in logs
+                 print("[Warn] Config missing. Force using [150, 300, 150]")
                  model_kwargs["hidden_dims"] = [150, 300, 150]
 
-    # 공통 필수 인자 업데이트
+    # Update common required arguments
     model_params = inspect.signature(ModelClass.__init__).parameters
     if "feature_sizes" in model_params:
         model_kwargs['feature_sizes'] = feature_sizes
 
-    # DeepFM은 device 인자가 없는 경우가 많음
+    # DeepFM often doesn't have a device argument
     if "device" in model_params:
         model_kwargs['device'] = Config.DEVICE
     else:
@@ -149,7 +149,7 @@ def main():
     if version == "v3" and "seq_vocab_size" in model_params:
         model_kwargs['seq_vocab_size'] = product_vocab_size
 
-    # 설정 확인 로그
+    # Log configuration check
     if "hidden_dims" in model_kwargs:
         print(f"[Config Check] Loaded hidden_dims: {model_kwargs['hidden_dims']}")
     elif "dnn_hidden_units" in model_kwargs:
@@ -158,7 +158,7 @@ def main():
     print(f"Initializing {ModelClass.__name__}...")
     model = ModelClass(**model_kwargs)
 
-    # 4. 가중치 로드
+    # 4. Load Weights
     ckpt_path = None
     target_name = f"best_{model_type}.pth"
     possible_path = os.path.join(Config.CKPT_DIR, target_name)
@@ -166,13 +166,13 @@ def main():
     if os.path.exists(possible_path):
         ckpt_path = possible_path
     else:
-        # 파일명 불일치 시 최신 파일 자동 탐색
+        # Auto-detect latest file if filename mismatch
         if os.path.exists(Config.CKPT_DIR):
             fs = [f for f in os.listdir(Config.CKPT_DIR) if f.endswith(".pth")]
             if fs: ckpt_path = max([os.path.join(Config.CKPT_DIR, f) for f in fs], key=os.path.getctime)
 
     if not ckpt_path:
-        raise FileNotFoundError(f"모델 가중치 파일을 찾을 수 없습니다: {Config.CKPT_DIR}")
+        raise FileNotFoundError(f"Model weight file not found: {Config.CKPT_DIR}")
 
     print(f"Loading weights from {os.path.basename(ckpt_path)}")
     cp = torch.load(ckpt_path, map_location=Config.DEVICE)
@@ -181,14 +181,14 @@ def main():
     model.load_state_dict(state_dict)
     model.to(Config.DEVICE).eval()
 
-    # 5. 데이터셋 로드
+    # 5. Load Dataset
     data_path = os.path.join(Config.OUTPUT_DIR, Config.RANKING_DATA_FILE)
     if not os.path.exists(data_path):
-        raise FileNotFoundError(f"데이터셋 없음: {data_path}\nmake_ranking_df.py를 먼저 실행하세요.")
+        raise FileNotFoundError(f"Dataset not found: {data_path}\nPlease run make_ranking_df.py first.")
 
     ranking_df = pd.read_parquet(data_path)
 
-    # 6. 추론
+    # 6. Inference
     print(f"Starting Inference ({len(ranking_df)} samples)...")
     all_scores = []
     BATCH_SIZE = 4096
@@ -210,7 +210,7 @@ def main():
 
     ranking_df["score"] = np.concatenate(all_scores)
 
-    # 7. 평가 (HitRate, MRR)
+    # 7. Evaluation (HitRate, MRR)
     ranking_df["rank"] = ranking_df.groupby("user_session_idx")["score"].rank(method="first", ascending=False)
     targets = ranking_df[ranking_df["ranking_label"] == 1]
 
@@ -226,38 +226,38 @@ def main():
     print(f"Saved inference results to {save_path}")
 
     # ==================================================================================
-    # 8. [Top-K 리스트 생성] + ID 복원 (Human Readable)
+    # 8. [Generate Top-K List] + Restore IDs (Human Readable)
     # ==================================================================================
     TOP_K = 5
     print(f"\n[Info] Generating Top-{TOP_K} recommendation list with restored names...")
 
-    # 1. 점수순 정렬 후 상위 K개 추출
+    # 1. Sort by score and extract Top K
     topk_df = ranking_df.sort_values(["user_session_idx", "score"], ascending=[True, False]).groupby("user_session_idx").head(TOP_K)
 
-    # 2. 매핑 정보를 이용한 ID 복원 (역매핑)
-    # 매핑 파일 구조: { 'brand': {'nike': 1, ...}, 'product_id': {'p100': 5, ...} }
+    # 2. Restore IDs using mapping info (Reverse Mapping)
+    # Mapping file structure: { 'brand': {'nike': 1, ...}, 'product_id': {'p100': 5, ...} }
 
-    # (A) Product Name 복원
+    # (A) Restore Product Name
     if "product_id" in mappings:
         idx2prod = {v: k for k, v in mappings["product_id"].items()}
         topk_df["product_name_real"] = topk_df["product_id_idx"].map(idx2prod).fillna("unknown")
 
-    # (B) Brand Name 복원
+    # (B) Restore Brand Name
     if "brand" in mappings:
         idx2brand = {v: k for k, v in mappings["brand"].items()}
         topk_df["brand_name_real"] = topk_df["brand_idx"].map(idx2brand).fillna("unknown")
 
-    # (C) Category Code 복원
+    # (C) Restore Category Code
     if "category_code" in mappings:
         idx2cat = {v: k for k, v in mappings["category_code"].items()}
         topk_df["category_name_real"] = topk_df["category_code_idx"].map(idx2cat).fillna("unknown")
 
-    # 3. 저장할 컬럼 선별 (깔끔하게)
-    # 존재하는 컬럼만 선택해서 저장
+    # 3. Select columns to save (Clean format)
+    # Select only existing columns
     candidate_cols = [
         "user_session_idx", "rank", "score", "ranking_label",
-        "product_name_real", "brand_name_real", "category_name_real", # 복원된 이름
-        "product_id_idx" # 원본 인덱스도 참고용으로 유지
+        "product_name_real", "brand_name_real", "category_name_real", # Restored names
+        "product_id_idx" # Keep original index for reference
     ]
     save_cols = [c for c in candidate_cols if c in topk_df.columns]
 
